@@ -731,7 +731,7 @@ export default function Home() {
                   </p>
                   <div className="flex flex-col sm:flex-row gap-4 justify-center">
                     <button
-                      onClick={getNiches}
+                      onClick={() => getNiches(false)}
                       className="gradient-button"
                       disabled={loading}
                     >
@@ -870,7 +870,7 @@ export default function Home() {
                         className="flex-1 px-4 py-2 bg-white/5 rounded-lg border border-white/10 text-white focus:border-purple-500 transition-all hover:bg-white/10"
                       />
                       <button
-                        onClick={getNiches}
+                        onClick={() => getNiches(false)}
                         className="px-4 md:px-6 py-2 gradient-button animate-glow whitespace-nowrap"
                         disabled={loading}
                       >
@@ -936,7 +936,7 @@ export default function Home() {
                         : "Try generating new niches or adjusting your filters"}
                     </p>
                     <button
-                      onClick={getNiches}
+                      onClick={() => getNiches(false)}
                       className="px-6 py-3 gradient-button animate-glow"
                     >
                       Generate New Niches
