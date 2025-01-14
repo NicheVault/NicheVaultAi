@@ -2,15 +2,11 @@ import { useState, useEffect } from 'react';
 import Head from 'next/head';
 import Image from 'next/image';
 import { useRouter } from 'next/router';
-import { NicheOption, ProblemOption } from '../types';
+import { NicheOption, ProblemOption, User } from '../types';
 import { generatePDFLink } from '../utils/pdfGenerator';
 import Footer from '../components/Footer';
-
-interface User {
-  id: string;
-  name: string;
-  email: string;
-}
+import Notification from '../components/Notification';
+import MobileMenu from '../components/MobileMenu';
 
 interface SavedGuide {
   _id: string;

@@ -12,6 +12,16 @@ export default async function handler(
   }
 
   try {
+    if (!req.body.action) {
+      return res.status(400).json({
+        error: 'Missing required action parameter',
+        userMessage: 'Something went wrong. Please try again.'
+      });
+    }
+
+    const userIP = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const rateLimitKey = `rateLimit:${userIP}`;
+    
     const { action, niche, problem, currentSolution } = req.body;
     const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
@@ -67,33 +77,11 @@ export default async function handler(
 
           const parsedResponse = JSON.parse(cleanedText);
           return res.status(200).json(parsedResponse);
-        } catch (parseError) {
-          console.error('Failed to parse niches JSON:', nichesText);
-          return res.status(200).json({
-            categories: ['Technology', 'Health', 'Education', 'Finance', 'Lifestyle'],
-            niches: [
-              {
-                name: 'AI Solutions',
-                category: 'Technology',
-                description: 'Develop AI-powered solutions for businesses',
-                potential: '★★★★★',
-                competition: 'Medium'
-              },
-              {
-                name: 'Digital Wellness',
-                category: 'Health',
-                description: 'Online mental health and wellness services',
-                potential: '★★★★☆',
-                competition: 'Medium'
-              },
-              {
-                name: 'EdTech Platform',
-                category: 'Education',
-                description: 'Online learning and skill development',
-                potential: '★★★★☆',
-                competition: 'Medium'
-              }
-            ]
+        } catch (error) {
+          console.error('Niche generation error:', error);
+          return res.status(500).json({
+            error: error.message,
+            userMessage: 'Failed to generate niches. Please try again in a moment.'
           });
         }
         break;
@@ -101,7 +89,10 @@ export default async function handler(
 
       case 'getProblems': {
         if (!niche) {
-          return res.status(400).json({ error: 'Niche is required' });
+          return res.status(400).json({
+            error: 'Niche parameter is required',
+            userMessage: 'Please select a niche first.'
+          });
         }
 
         const problemsPrompt = `Analyze the "${niche}" niche and provide 5 real-world problems that entrepreneurs can solve.
@@ -194,8 +185,11 @@ export default async function handler(
       default:
         return res.status(400).json({ error: 'Invalid action' });
     }
-  } catch (error: any) {
+  } catch (error) {
     console.error('API Error:', error);
-    return res.status(500).json({ error: error.message || 'Something went wrong' });
+    return res.status(500).json({
+      error: error.message,
+      userMessage: 'An unexpected error occurred. Please try again.'
+    });
   }
 } 
