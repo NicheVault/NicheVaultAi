@@ -3,265 +3,199 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || '');
 
-export const config = {
-  maxDuration: 60 // Set to maximum allowed for Hobby plan
-};
-
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
-  // Add timeout promise
-  const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => reject(new Error('Request timeout')), 50000);
-  });
-
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
-    if (!req.body.action) {
-      return res.status(400).json({
-        error: 'Missing required action parameter',
-        userMessage: 'Something went wrong. Please try again.'
-      });
-    }
-
-    const userIP = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-    const rateLimitKey = `rateLimit:${userIP}`;
-    
     const { action, niche, problem, currentSolution } = req.body;
+    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
-    // Wrap the main logic in Promise.race
-    const result = await Promise.race([
-      (async () => {
-        const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
-        switch (action) {
-          case 'expandSolution':
-            const expandPrompt = `
-              I have a solution guide for the problem "${problem}" in the "${niche}" niche.
-              Current solution: ${currentSolution}
-              
-              Please expand this solution with:
-              1. More detailed implementation steps
-              2. Additional strategies and tactics
-              3. Specific tools and resources
-              4. Common pitfalls to avoid
-              5. Success metrics and KPIs
-              
-              Format the response with proper headings (using #), bold text (using **), and bullet points (using -).
-              Make sure the additional content complements the existing solution without repeating information.
-            `;
+    switch (action) {
+      case 'expandSolution':
+        const expandPrompt = `
+          I have a solution guide for the problem "${problem}" in the "${niche}" niche.
+          Current solution: ${currentSolution}
+          
+          Please expand this solution with:
+          1. More detailed implementation steps
+          2. Additional strategies and tactics
+          3. Specific tools and resources
+          4. Common pitfalls to avoid
+          5. Success metrics and KPIs
+          
+          Format the response with proper headings (using #), bold text (using **), and bullet points (using -).
+          Make sure the additional content complements the existing solution without repeating information.
+        `;
 
-            const expandResult = await model.generateContent(expandPrompt);
-            const expandResponse = await expandResult.response;
-            const additionalContent = expandResponse.text();
-            
-            return { additionalContent };
+        const expandResult = await model.generateContent(expandPrompt);
+        const expandResponse = await expandResult.response;
+        const additionalContent = expandResponse.text();
+        
+        return res.status(200).json({ additionalContent });
 
-          case 'getNiches': {
-            const { batch = 1 } = req.body;
-            const categories = ['Technology', 'Health', 'Education', 'Finance', 'Lifestyle', 'Entertainment', 'Sports', 'Food', 'Travel', 'Fashion'];
-            
-            // Get 2 random categories per batch to stay under limits
-            const selectedCategories = categories
-              .sort(() => Math.random() - 0.5)
-              .slice((batch - 1) * 2, batch * 2);
+      case 'getNiches': {
+        const nichesPrompt = `Generate a list of 20 profitable business niches.
+        
+        Respond ONLY with a valid JSON object in exactly this format:
+        {
+          "categories": ["Technology", "Health", "Education", "Finance", "Lifestyle"],
+          "niches": [
+            {
+              "name": "Example Niche",
+              "category": "Technology",
+              "description": "Brief description under 100 chars",
+              "potential": "★★★★☆",
+              "competition": "Medium"
+            }
+          ]
+        }`;
 
-            const nichesPrompt = `Generate 4 profitable business niches focusing on these categories: ${selectedCategories.join(', ')}.
-              
-              Respond ONLY with a valid JSON object in exactly this format:
+        const nichesResult = await model.generateContent(nichesPrompt);
+        const nichesText = await nichesResult.response.text();
+        
+        try {
+          const cleanedText = nichesText.trim()
+            .replace(/```json/g, '')
+            .replace(/```/g, '')
+            .replace(/\n/g, ' ')
+            .trim();
+
+          const parsedResponse = JSON.parse(cleanedText);
+          return res.status(200).json(parsedResponse);
+        } catch (parseError) {
+          console.error('Failed to parse niches JSON:', nichesText);
+          return res.status(200).json({
+            categories: ['Technology', 'Health', 'Education', 'Finance', 'Lifestyle'],
+            niches: [
               {
-                "categories": ${JSON.stringify(categories)},
-                "niches": [
-                  {
-                    "name": "Example Niche",
-                    "category": "Technology",
-                    "description": "Brief description under 100 chars",
-                    "potential": "★★★★☆",
-                    "competition": "Medium"
-                  }
-                ]
-              }`;
-
-            const nichesResult = await model.generateContent(nichesPrompt);
-            const nichesText = await nichesResult.response.text();
-            
-            try {
-              const cleanedText = nichesText.trim()
-                .replace(/```json/g, '')
-                .replace(/```/g, '')
-                .replace(/\n/g, ' ')
-                .trim();
-
-              const parsedResponse = JSON.parse(cleanedText);
-              return {
-                ...parsedResponse,
-                batch,
-                totalBatches: Math.ceil(categories.length / 2)
-              };
-            } catch (error) {
-              console.error('Niche generation error:', error);
-              return {
-                error: error.message,
-                userMessage: 'Failed to generate niches. Please try again in a moment.'
-              };
-            }
-            break;
-          }
-
-          case 'getProblems': {
-            if (!niche) {
-              return {
-                error: 'Niche parameter is required',
-                userMessage: 'Please select a niche first.'
-              };
-            }
-
-            const problemsPrompt = `Generate 3 specific, real-world problems in the "${niche}" niche that entrepreneurs can solve.
-              
-              Respond ONLY with a valid JSON object in exactly this format, no additional text or formatting:
+                name: 'AI Solutions',
+                category: 'Technology',
+                description: 'Develop AI-powered solutions for businesses',
+                potential: '★★★★★',
+                competition: 'Medium'
+              },
               {
-                "problems": [
-                  {
-                    "title": "Problem Title",
-                    "description": "Detailed problem description",
-                    "audience": "Target audience affected",
-                    "severity": "High/Medium/Low",
-                    "complexity": "High/Medium/Low",
-                    "example": "Real-world example"
-                  }
-                ]
-              }`;
-
-            try {
-              // Make multiple requests in parallel
-              const requests = Array(2).fill(null).map(async () => {
-                const result = await model.generateContent(problemsPrompt);
-                const text = await result.response.text();
-                const cleaned = text
-                  .replace(/```json\s*/g, '')
-                  .replace(/```\s*/g, '')
-                  .replace(/\n\s*/g, ' ')
-                  .trim();
-
-                try {
-                  const parsed = JSON.parse(cleaned);
-                  return parsed.problems || [];
-                } catch (e) {
-                  console.error('Parse error for batch:', e);
-                  return [];
-                }
-              });
-
-              const results = await Promise.all(requests);
-              const allProblems = results.flat();
-
-              // Remove duplicates based on title
-              const uniqueProblems = Array.from(
-                new Map(allProblems.map(p => [p.title, p])).values()
-              );
-
-              return { problems: uniqueProblems };
-            } catch (error) {
-              console.error('Problems generation error:', error);
-              return {
-                problems: [
-                  {
-                    title: "Market Research",
-                    description: `Understanding customer needs in the ${niche} market`,
-                    audience: "Business owners and entrepreneurs",
-                    severity: "High",
-                    complexity: "Medium",
-                    example: `A startup needs to validate their ${niche} product idea`
-                  }
-                ]
-              };
-            }
-            break;
-          }
-
-          case 'getSolution': {
-            if (!niche || !problem) {
-              return { error: 'Niche and problem are required' };
-            }
-
-            const solutionPrompt = `Create a detailed solution guide for this problem: "${problem}" in the ${niche} niche.
-              
-              Format the response with these sections:
-              1. Executive Summary
-              2. Market Analysis
-              3. Implementation Plan
-              4. Business Model
-              5. Marketing Strategy
-              6. Risk Analysis
-              7. Success Metrics
-              8. Next Steps
-
-              Keep the response focused and structured. No code blocks or special formatting needed.`;
-
-            try {
-              // Make multiple attempts to get a good response
-              const attempts = Array(2).fill(null).map(async () => {
-                const result = await model.generateContent(solutionPrompt);
-                return result.response.text();
-              });
-
-              const solutions = await Promise.all(attempts);
-              
-              // Choose the best response (longest valid one)
-              const validSolutions = solutions.filter(sol => 
-                sol.includes('Executive Summary') && 
-                sol.includes('Implementation Plan')
-              );
-
-              const bestSolution = validSolutions.reduce((best, current) => 
-                current.length > best.length ? current : best
-              , validSolutions[0] || solutions[0]);
-
-              return { 
-                solution: bestSolution
-                  .replace(/```/g, '')
-                  .replace(/\n\n+/g, '\n\n')
-                  .trim()
-              };
-            } catch (error) {
-              console.error('Solution generation error:', error);
-              return { 
-                solution: `
-                  # Executive Summary
-                  Solution approach for ${problem} in the ${niche} niche.
-                  
-                  # Implementation Plan
-                  1. Research and Planning
-                  2. Development Phase
-                  3. Testing and Validation
-                  4. Launch Strategy
-                  
-                  # Next Steps
-                  Begin with market research and competitor analysis.
-                `.replace(/\n\s+/g, '\n').trim()
-              };
-            }
-            break;
-          }
-
-          default:
-            return { error: 'Invalid action' };
+                name: 'Digital Wellness',
+                category: 'Health',
+                description: 'Online mental health and wellness services',
+                potential: '★★★★☆',
+                competition: 'Medium'
+              },
+              {
+                name: 'EdTech Platform',
+                category: 'Education',
+                description: 'Online learning and skill development',
+                potential: '★★★★☆',
+                competition: 'Medium'
+              }
+            ]
+          });
         }
-      })(),
-      timeoutPromise
-    ]);
+        break;
+      }
 
-    return res.status(200).json(result);
+      case 'getProblems': {
+        if (!niche) {
+          return res.status(400).json({ error: 'Niche is required' });
+        }
+
+        const problemsPrompt = `Analyze the "${niche}" niche and provide 5 real-world problems that entrepreneurs can solve.
+        Respond in this exact JSON format:
+        {
+          "problems": [
+            {
+              "title": "Problem Title",
+              "description": "Detailed problem description",
+              "audience": "Target audience affected",
+              "severity": "High/Medium/Low",
+              "complexity": "High/Medium/Low",
+              "example": "Real-world example of this problem"
+            }
+          ]
+        }
+        
+        Important: Ensure the response is valid JSON and properly formatted. Do not include any markdown code blocks or additional text.`;
+
+        const problemsResult = await model.generateContent(problemsPrompt);
+        const problemsText = await problemsResult.response.text();
+        let cleanedText = '';
+        
+        try {
+          cleanedText = problemsText
+            .replace(/```json\s*/g, '')
+            .replace(/```\s*/g, '')
+            .replace(/\n\s*/g, ' ')
+            .trim();
+
+          if (!cleanedText.startsWith('{') || !cleanedText.endsWith('}')) {
+            throw new Error('Invalid JSON format in response');
+          }
+
+          const parsedProblems = JSON.parse(cleanedText);
+
+          if (!parsedProblems.problems || !Array.isArray(parsedProblems.problems)) {
+            throw new Error('Invalid response structure');
+          }
+
+          return res.status(200).json(parsedProblems);
+        } catch (parseError) {
+          console.error('Failed to parse problems JSON:', {
+            originalText: problemsText,
+            cleanedText: cleanedText,
+            error: parseError
+          });
+
+          return res.status(200).json({
+            problems: [
+              {
+                title: "Market Analysis",
+                description: "Understanding market trends and customer needs in the " + niche + " niche",
+                audience: "Entrepreneurs and business owners",
+                severity: "Medium",
+                complexity: "Medium",
+                example: "A business owner needs to validate their product idea in the " + niche + " market"
+              }
+            ]
+          });
+        }
+        break;
+      }
+
+      case 'getSolution': {
+        if (!niche || !problem) {
+          return res.status(400).json({ error: 'Niche and problem are required' });
+        }
+
+        const solutionPrompt = `Create a detailed solution guide for this problem: "${problem}" in the ${niche} niche.
+        Format the response in HTML with these sections:
+        - Executive Summary
+        - Market Analysis
+        - Implementation Plan
+        - Business Model
+        - Marketing Strategy
+        - Risk Analysis
+        - Success Metrics
+        - Next Steps`;
+
+        const solutionResult = await model.generateContent(solutionPrompt);
+        const solution = await solutionResult.response.text();
+
+        return res.status(200).json({ 
+          solution: solution.replace(/```html/g, '').replace(/```/g, '')
+        });
+        break;
+      }
+
+      default:
+        return res.status(400).json({ error: 'Invalid action' });
+    }
   } catch (error: any) {
     console.error('API Error:', error);
-    return res.status(500).json({
-      error: error.message,
-      userMessage: error.message === 'Request timeout' 
-        ? 'Request took too long. Please try again.'
-        : 'An unexpected error occurred. Please try again.'
-    });
+    return res.status(500).json({ error: error.message || 'Something went wrong' });
   }
 } 
