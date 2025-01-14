@@ -5,19 +5,21 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "lint": "next lint",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.1.3",
+    "@google/generative-ai": "latest",
     "@react-pdf/renderer": "^4.1.6",
     "bcryptjs": "^2.4.3",
-    "jsonwebtoken": "^9.0.2",
-    "mongodb": "^6.12.0",
+    "jsonwebtoken": "latest",
+    "mongodb": "latest",
     "mongoose": "^8.9.5",
-    "next": "^14.0.4",
+    "next": "latest",
     "next-auth": "^4.24.11",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react": "latest",
+    "react-dom": "latest"
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.10",

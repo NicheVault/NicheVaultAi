@@ -75,6 +75,11 @@ export default function Home() {
     setTimeout(() => setNotification(prev => ({ ...prev!, show: false })), 3000);
   };
 
+  // Add new state for tracking batches
+  const [currentBatch, setCurrentBatch] = useState(1);
+  const [totalBatches, setTotalBatches] = useState(5);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+
   const handleLogoClick = () => {
     if (user) {
       router.push('/dashboard');
@@ -250,54 +255,52 @@ export default function Home() {
     loadInitialNiches();
   }, []);
 
-  const getNiches = async () => {
+  const getNiches = async (loadMore = false) => {
     if (!user) {
       setShowAuthModal(true);
       return;
     }
 
-    setLoading(true);
-    let attempts = 0;
-    const maxAttempts = 3;
-    const allNiches = [];
+    if (!loadMore) {
+      setNiches([]);
+      setCurrentBatch(1);
+      setLoading(true);
+    } else {
+      setIsLoadingMore(true);
+    }
 
     try {
-      while (attempts < maxAttempts && allNiches.length < 9) { // Aim for 9 total niches
-        const response = await fetch('/api/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            action: 'getNiches',
-            excludeNiches: [...initialNiches.map(n => n.name), ...allNiches.map(n => n.name)]
-          })
-        });
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          action: 'getNiches',
+          batch: loadMore ? currentBatch + 1 : 1,
+          excludeNiches: niches.map(n => n.name)
+        })
+      });
 
-        const data = await response.json();
-        
-        if (!response.ok) {
-          throw new Error(data.userMessage || data.error || 'Failed to fetch niches');
-        }
-
-        if (data.niches?.length) {
-          allNiches.push(...data.niches);
-          // Update UI progressively
-          setCategories(data.categories || []);
-          setNiches(hasGeneratedNew ? [...niches, ...data.niches] : data.niches);
-        }
-
-        attempts++;
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.userMessage || data.error || 'Failed to fetch niches');
       }
 
+      setCategories(data.categories || []);
+      setNiches(prev => loadMore ? [...prev, ...data.niches] : data.niches || []);
+      setTotalBatches(data.totalBatches || 5);
+      setCurrentBatch(data.batch || 1);
       setHasGeneratedNew(true);
       setStep('niches');
     } catch (error: any) {
       console.error('Error fetching niches:', error);
       showNotification(
-        error.message || 'An error occurred while fetching niches. Please try again.',
+        error.message || 'An error occurred while fetching niches',
         'error'
       );
     } finally {
       setLoading(false);
+      setIsLoadingMore(false);
     }
   };
 
@@ -942,23 +945,32 @@ export default function Home() {
                 )}
 
                 {!loading && filteredNiches.length > 0 && (
-                  <div className="mt-8 text-center">
+                  <div className="mt-8 text-center space-y-4">
+                    {currentBatch < totalBatches && (
+                      <button
+                        onClick={() => getNiches(true)}
+                        className="px-6 py-3 bg-white/5 hover:bg-white/10 rounded-lg transition-all"
+                        disabled={isLoadingMore}
+                      >
+                        {isLoadingMore ? (
+                          <span className="flex items-center justify-center">
+                            <svg className="animate-spin -ml-1 mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Loading More...
+                          </span>
+                        ) : (
+                          'Load More Niches'
+                        )}
+                      </button>
+                    )}
                     <button
-                      onClick={getNiches}
+                      onClick={() => getNiches(false)}
                       className="px-6 py-3 gradient-button animate-glow"
                       disabled={loading}
                     >
-                      {loading ? (
-                        <span className="flex items-center">
-                          <svg className="animate-spin -ml-1 mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                          Generating...
-                        </span>
-                      ) : (
-                        'Discover More Niches'
-                      )}
+                      Generate New Batch
                     </button>
                   </div>
                 )}
