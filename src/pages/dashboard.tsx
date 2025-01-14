@@ -29,7 +29,17 @@ export default function Dashboard() {
   const [selectedGuide, setSelectedGuide] = useState<SavedGuide | null>(null);
   const [showGuideModal, setShowGuideModal] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [notification, setNotification] = useState<{
+    message: string;
+    type: 'error' | 'success';
+    show: boolean;
+  }>();
   const router = useRouter();
+
+  const showNotification = (message: string, type: 'error' | 'success') => {
+    setNotification({ message, type, show: true });
+    setTimeout(() => setNotification(prev => ({ ...prev!, show: false })), 3000);
+  };
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -42,6 +52,11 @@ export default function Dashboard() {
 
     setUser(JSON.parse(userData));
     fetchSavedGuides(token);
+
+    const { redirect } = router.query;
+    if (redirect === 'login') {
+      showNotification('Welcome back! Successfully logged in.', 'success');
+    }
   }, []);
 
   const fetchSavedGuides = async (token: string) => {
@@ -411,6 +426,29 @@ export default function Dashboard() {
                   {generatePDFLink(selectedGuide)}
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {notification?.show && (
+          <div className="fixed top-4 right-4 z-50 animate-fade-in">
+            <div className={`glass-card p-4 ${
+              notification.type === 'error' ? 'border-red-500/50' : 'border-green-500/50'
+            } border flex items-center gap-3 max-w-md`}>
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                notification.type === 'error' ? 'bg-red-500/20' : 'bg-green-500/20'
+              }`}>
+                {notification.type === 'error' ? '❌' : '✅'}
+              </div>
+              <p className="text-sm flex-1">{notification.message}</p>
+              <button 
+                onClick={() => setNotification(prev => ({ ...prev!, show: false }))}
+                className="p-1 hover:bg-white/5 rounded-lg transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
           </div>
         )}

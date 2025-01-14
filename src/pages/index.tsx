@@ -125,6 +125,15 @@ export default function Home() {
         setUser(data.user);
         setShowAuthModal(false);
         fetchSavedGuides(data.token);
+        
+        // Show success notification
+        showNotification(
+          authMode === 'login' ? 'Successfully logged in!' : 'Registration successful!',
+          'success'
+        );
+        
+        // Redirect to dashboard
+        router.push('/dashboard');
       }
     } catch (error: any) {
       showNotification(error.message, 'error');
@@ -136,6 +145,8 @@ export default function Home() {
     localStorage.removeItem('user');
     setUser(null);
     setSavedGuides([]);
+    showNotification('Successfully logged out!', 'success');
+    router.push('/');
   };
 
   const saveGuide = async () => {
@@ -257,8 +268,9 @@ export default function Home() {
       });
 
       const data = await response.json();
+      
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch niches');
+        throw new Error(data.userMessage || data.error || 'Failed to fetch niches');
       }
 
       setCategories(data.categories || []);
@@ -267,7 +279,10 @@ export default function Home() {
       setStep('niches');
     } catch (error: any) {
       console.error('Error fetching niches:', error);
-      showNotification(error.message || 'An error occurred while fetching niches', 'error');
+      showNotification(
+        error.message || 'An error occurred while fetching niches. Please try again.',
+        'error'
+      );
     } finally {
       setLoading(false);
     }
