@@ -257,24 +257,37 @@ export default function Home() {
     }
 
     setLoading(true);
-    try {
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          action: 'getNiches',
-          excludeNiches: initialNiches.map(n => n.name)
-        })
-      });
+    let attempts = 0;
+    const maxAttempts = 3;
+    const allNiches = [];
 
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.userMessage || data.error || 'Failed to fetch niches');
+    try {
+      while (attempts < maxAttempts && allNiches.length < 9) { // Aim for 9 total niches
+        const response = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            action: 'getNiches',
+            excludeNiches: [...initialNiches.map(n => n.name), ...allNiches.map(n => n.name)]
+          })
+        });
+
+        const data = await response.json();
+        
+        if (!response.ok) {
+          throw new Error(data.userMessage || data.error || 'Failed to fetch niches');
+        }
+
+        if (data.niches?.length) {
+          allNiches.push(...data.niches);
+          // Update UI progressively
+          setCategories(data.categories || []);
+          setNiches(hasGeneratedNew ? [...niches, ...data.niches] : data.niches);
+        }
+
+        attempts++;
       }
 
-      setCategories(data.categories || []);
-      setNiches(hasGeneratedNew ? [...niches, ...data.niches] : data.niches || []);
       setHasGeneratedNew(true);
       setStep('niches');
     } catch (error: any) {

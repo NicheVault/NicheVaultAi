@@ -1,18 +1,18 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// Increase timeout for the API route
+// Update config to stay within Hobby plan limits
 export const config = {
-  maxDuration: 300 // Set maximum duration to 5 minutes
+  maxDuration: 60 // Set to maximum allowed for Hobby plan (60 seconds)
 };
 
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
-  // Add timeout handling
+  // Reduce timeout to be safely under the 60-second limit
   const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => reject(new Error('Request timeout')), 25000); // 25 second timeout
+    setTimeout(() => reject(new Error('Request timeout')), 50000); // 50 second timeout
   });
 
   try {
@@ -42,28 +42,37 @@ async function handleRequest(req: NextApiRequest, model: any) {
 
   switch (action) {
     case 'getNiches': {
-      // Break down the niche generation into smaller chunks
+      // Reduce the workload to fit within time constraints
       const categories = ['Technology', 'Health', 'Education', 'Business', 'Lifestyle'];
-      const nichesPerCategory = 2; // Reduce number of niches per request
+      const nichesPerCategory = 1; // Generate just 1 niche per category to reduce time
       
       const niches = [];
       
-      for (const category of categories) {
-        const prompt = `Generate ${nichesPerCategory} profitable digital product niches in the ${category} category.
-          Format as JSON array with fields: name, category, description, potential (High/Medium/Low), competition (High/Medium/Low)`;
-        
-        const result = await model.generateContent(prompt);
-        const response = await result.response.text();
+      // Only process 3 random categories to stay within time limit
+      const randomCategories = categories
+        .sort(() => Math.random() - 0.5)
+        .slice(0, 3);
+      
+      for (const category of randomCategories) {
+        const prompt = `Generate ${nichesPerCategory} profitable digital product niche in the ${category} category.
+          Format as JSON array with fields: name, category, description, potential (High/Medium/Low), competition (High/Medium/Low).
+          Keep descriptions concise.`;
         
         try {
+          const result = await model.generateContent(prompt);
+          const response = await result.response.text();
           const parsedNiches = JSON.parse(response);
           niches.push(...parsedNiches);
         } catch (e) {
-          console.error(`Error parsing niches for ${category}:`, e);
+          console.error(`Error processing ${category}:`, e);
+          continue; // Skip failed category and continue with others
         }
       }
 
-      return { categories, niches };
+      return { 
+        categories, // Return all categories even though we only processed some
+        niches 
+      };
     }
     // ... rest of your switch cases
   }
