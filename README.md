@@ -21,4 +21,3 @@ NicheVault is a sophisticated web application that helps entrepreneurs discover 
 - **Authentication**: JWT
 - **Styling**: Custom TailwindCSS components with glass-morphism design
 
-## ��️ Project Structure 
