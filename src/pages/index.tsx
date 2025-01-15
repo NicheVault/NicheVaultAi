@@ -155,29 +155,45 @@ export default function Home() {
       setLoading(true);
       setHasGeneratedNew(true);
       
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           action: 'getNiches',
-          excludeNiches: niches.map(n => n.name) // Exclude existing niches
-        })
+          excludeNiches: niches.map(n => n.name)
+        }),
+        signal: controller.signal
       });
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
+      clearTimeout(timeoutId);
 
+      if (!response.ok) {
+        if (response.status === 504) {
+          throw new Error('Request timed out. Please try again.');
+        }
+        const data = await response.json();
+        throw new Error(data.message || 'Failed to generate niches');
+      }
+
+      const data = await response.json();
+      
       // Combine and remove duplicates
-      const combinedNiches = [...niches, ...data.niches];
+      const combinedNiches = [...niches, ...(data.niches || [])];
       const uniqueNiches = combinedNiches.filter((niche, index, self) =>
         index === self.findIndex((n) => n.name === niche.name)
       );
 
-      setCategories([...new Set([...categories, ...data.categories])]);
+      setCategories([...new Set([...categories, ...(data.categories || [])])]);
       setNiches(uniqueNiches);
     } catch (error: any) {
       console.error('Error generating niches:', error);
-      showNotification(error.message || 'Failed to generate niches', 'error');
+      showNotification(
+        error.message || 'Failed to generate niches. Please try again.',
+        'error'
+      );
     } finally {
       setLoading(false);
     }

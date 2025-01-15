@@ -5,27 +5,107 @@ import { rateLimiter } from '../../utils/apiRateLimit';
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || '');
 
+// Add rate limiting and retry logic
+const MAX_RETRIES = 2;
+const RETRY_DELAY = 1000; // 1 second
+
+const retryWithTimeout = async <T>(
+  operation: () => Promise<T>,
+  timeoutMs: number,
+  retries = MAX_RETRIES
+): Promise<T> => {
+  let lastError;
+  
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await Promise.race([
+        operation(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Operation timed out')), timeoutMs)
+        )
+      ]) as T;
+    } catch (error) {
+      lastError = error;
+      if (i < retries - 1) {
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (i + 1)));
+      }
+    }
+  }
+  throw lastError;
+};
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    return res.status(405).json({ message: 'Method not allowed' });
   }
 
   try {
     const { action, niche, problem, currentSolution } = req.body;
     const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
-    // Wrap the API calls with rate limiting
-    const makeApiCall = async (prompt: string) => {
-      return rateLimiter.addToQueue(async () => {
-        const result = await model.generateContent(prompt);
-        return result.response.text();
-      });
-    };
-
     switch (action) {
+      case 'getNiches': {
+        const batchSize = 3; // Reduced batch size
+        const totalNiches = 12; // Reduced total niches
+        const batches = Math.ceil(totalNiches / batchSize);
+        const excludeNiches = req.body.excludeNiches || [];
+        
+        let allNiches = [];
+        
+        for (let i = 0; i < batches; i++) {
+          try {
+            const nichesPrompt = `Generate ${batchSize} unique and profitable business niches${
+              excludeNiches.length > 0 ? ' (excluding: ' + excludeNiches.join(', ') + ')' : ''
+            }.`;
+
+            const result = await retryWithTimeout(
+              async () => {
+                const response = await model.generateContent(nichesPrompt);
+                const text = response.response.text();
+                try {
+                  // Clean and parse the response
+                  const cleaned = text.replace(/```json\s*/g, '').replace(/```/g, '').trim();
+                  return JSON.parse(cleaned).niches;
+                } catch (parseError) {
+                  console.error('Parse error:', parseError);
+                  // Fallback format if JSON parsing fails
+                  return text.split('\n')
+                    .filter(line => line.trim())
+                    .map(name => ({
+                      name: name.replace(/^\d+\.\s*/, '').trim(),
+                      category: 'Other',
+                      description: '',
+                      potential: '★★★☆☆',
+                      competition: 'Medium'
+                    }));
+                }
+              },
+              5000 // 5 second timeout
+            );
+
+            allNiches = [...allNiches, ...result];
+          } catch (error) {
+            console.error(`Batch ${i} failed:`, error);
+            continue; // Skip failed batch and continue
+          }
+        }
+
+        // Remove duplicates and format response
+        const uniqueNiches = Array.from(new Set(allNiches.map(n => n.name)))
+          .map(name => allNiches.find(n => n.name === name))
+          .filter(Boolean);
+
+        const categories = [...new Set(uniqueNiches.map(n => n.category))];
+
+        return res.status(200).json({
+          categories,
+          niches: uniqueNiches.slice(0, totalNiches)
+        });
+      }
+
       case 'expandSolution':
         const expandPrompt = `
           I have a solution guide for the problem "${problem}" in the "${niche}" niche.
@@ -47,59 +127,6 @@ export default async function handler(
         const additionalContent = expandResponse.text();
         
         return res.status(200).json({ additionalContent });
-
-      case 'getNiches': {
-        const batchSize = 5;
-        const totalNiches = 20;
-        const batches = Math.ceil(totalNiches / batchSize);
-        const excludeNiches = req.body.excludeNiches || [];
-        
-        const nicheBatches = await processBatchRequests(
-          Array(batches).fill(null),
-          1,
-          async () => {
-            const nichesPrompt = `Generate a list of ${batchSize} unique and profitable business niches${
-              excludeNiches.length > 0 ? ' (excluding: ' + excludeNiches.join(', ') + ')' : ''
-            }.
-            
-            Respond ONLY with a valid JSON object in exactly this format:
-            {
-              "niches": [
-                {
-                  "name": "Example Niche",
-                  "category": "Technology",
-                  "description": "Brief description under 100 chars",
-                  "potential": "★★★★☆",
-                  "competition": "Medium"
-                }
-              ]
-            }`;
-
-            try {
-              const response = await makeApiCall(nichesPrompt);
-              const cleaned = response.replace(/```json\s*/g, '').replace(/```/g, '').trim();
-              const parsed = JSON.parse(cleaned).niches;
-              
-              // Filter out any duplicates or excluded niches
-              return parsed.filter((niche: any) => 
-                !excludeNiches.includes(niche.name) &&
-                parsed.findIndex((n: any) => n.name === niche.name) === parsed.indexOf(niche)
-              );
-            } catch (error) {
-              console.error('Failed to parse batch response:', error);
-              return [];
-            }
-          }
-        );
-
-        const allNiches = nicheBatches.flat();
-        const categories = [...new Set(allNiches.map(n => n.category))];
-
-        return res.status(200).json({
-          categories,
-          niches: allNiches
-        });
-      }
 
       case 'getProblems': {
         const problemBatches = await processBatchRequests(
@@ -219,12 +246,9 @@ export default async function handler(
     }
   } catch (error: any) {
     console.error('API Error:', error);
-    if (error.message.includes('429')) {
-      return res.status(429).json({ 
-        error: 'Rate limit exceeded. Please try again in a few moments.',
-        retryAfter: 5 // Suggest retry after 5 seconds
-      });
-    }
-    return res.status(500).json({ error: error.message || 'Something went wrong' });
+    return res.status(error.status || 500).json({ 
+      message: error.message || 'Something went wrong',
+      error: process.env.NODE_ENV === 'development' ? error.toString() : undefined
+    });
   }
 } 
