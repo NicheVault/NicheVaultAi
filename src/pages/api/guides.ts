@@ -2,9 +2,21 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import connectDB from '../../lib/mongodb';
 import User from '../../models/User';
 import jwt from 'jsonwebtoken';
+import { Types } from 'mongoose';
+import mongoose from 'mongoose';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const DEBUG = process.env.NODE_ENV === 'development';
+
+// Add interface for guide
+interface IGuide {
+  niche: string;
+  problem: string;
+  solution: string;
+  isPinned: boolean;
+  createdAt: Date;
+  _id?: Types.ObjectId;
+}
 
 // Middleware to verify JWT token
 const verifyToken = (req: NextApiRequest) => {
@@ -114,11 +126,11 @@ export default async function handler(
 
           // Initialize savedGuides if it doesn't exist
           if (!existingUser.savedGuides) {
-            existingUser.savedGuides = [];
+            existingUser.savedGuides = new mongoose.Types.DocumentArray([]);
           }
 
-          // Create new guide
-          const newGuide = {
+          // Create new guide with proper typing
+          const newGuide: IGuide = {
             niche,
             problem,
             solution,
@@ -126,14 +138,18 @@ export default async function handler(
             createdAt: new Date()
           };
 
+          // Add the guide to the array
           existingUser.savedGuides.push(newGuide);
           await existingUser.save();
+
+          // Get the newly added guide
+          const savedGuide = existingUser.savedGuides[existingUser.savedGuides.length - 1];
 
           console.log('Guide saved successfully for user:', decoded.id);
           
           return res.status(201).json({
             message: 'Guide saved successfully',
-            guide: existingUser.savedGuides[existingUser.savedGuides.length - 1]
+            guide: savedGuide
           });
         } catch (error: any) {
           console.error('Error saving guide:', error);
