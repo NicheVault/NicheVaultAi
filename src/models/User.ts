@@ -101,6 +101,10 @@ userSchema.methods.toJSON = function() {
   return obj;
 };
 
+// Add indexes for better query performance
+userSchema.index({ 'savedGuides.isPinned': 1 });
+userSchema.index({ 'savedGuides.createdAt': -1 });
+
 // Create and export the model with proper typing
 const User: Model<IUser> = mongoose.models.User || mongoose.model<IUser>('User', userSchema);
 

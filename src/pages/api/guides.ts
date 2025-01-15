@@ -44,67 +44,67 @@ const verifyToken = (req: NextApiRequest) => {
   }
 };
 
+// Add timeout helper
+const withTimeout = <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Operation timed out')), timeoutMs)
+    )
+  ]) as Promise<T>;
+};
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
-  // Add cache control headers
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
+  // Add early timeout header
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Keep-Alive', 'timeout=8');
 
   try {
-    await connectDB();
+    // Connect to DB with timeout
+    await withTimeout(connectDB(), 5000);
     const decoded = verifyToken(req);
 
-    if (!decoded || !decoded.id) {
+    if (!decoded?.id) {
       return res.status(401).json({ message: 'Invalid or missing authentication' });
     }
-
-    console.log('Request Method:', req.method);
-    console.log('User ID:', decoded.id);
 
     switch (req.method) {
       case 'GET':
         try {
-          // Get user's saved guides with optimized query
-          const user = await User.findById(decoded.id)
-            .select('savedGuides')
-            .lean()
-            .exec(); // Add exec() for better performance
+          // Optimize query with lean and timeout
+          const user = await withTimeout(
+            User.findById(decoded.id)
+              .select('savedGuides')
+              .lean()
+              .exec(),
+            3000
+          );
           
           if (!user) {
-            if (DEBUG) console.error(`[Guides API] User not found: ${decoded.id}`);
-            return res.status(404).json({ 
-              message: 'User not found',
-              details: DEBUG ? `ID: ${decoded.id}` : undefined
-            });
+            return res.status(404).json({ message: 'User not found' });
           }
 
-          // Ensure savedGuides exists and sort by pinned status
-          const guides = (user.savedGuides || []).sort((a, b) => {
-            // Sort by pinned status first, then by date
-            if (a.isPinned === b.isPinned) {
-              return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-            }
-            return a.isPinned ? -1 : 1;
-          });
-          
-          if (DEBUG) {
-            console.log(`[Guides API] Successfully fetched ${guides.length} guides for user ${decoded.id}`);
-          }
+          // Process guides in memory to avoid timeout
+          const guides = (user.savedGuides || [])
+            .sort((a, b) => {
+              if (a.isPinned === b.isPinned) {
+                return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+              }
+              return a.isPinned ? -1 : 1;
+            })
+            .map(guide => ({
+              ...guide,
+              createdAt: new Date(guide.createdAt).toISOString()
+            }));
 
-          // Return response with metadata
-          return res.status(200).json({ 
-            guides,
-            metadata: {
-              total: guides.length,
-              pinned: guides.filter(g => g.isPinned).length,
-              timestamp: new Date().toISOString()
-            }
-          });
+          return res.status(200).json({ guides });
         } catch (error: any) {
-          console.error('[Guides API] Error fetching guides:', error);
+          if (error.message === 'Operation timed out') {
+            return res.status(504).json({ message: 'Request timed out' });
+          }
           throw error;
         }
 
@@ -116,47 +116,37 @@ export default async function handler(
             return res.status(400).json({ message: 'Missing required fields' });
           }
 
-          // Find user with password field included
-          const existingUser = await User.findById(decoded.id).select('+password');
-          
-          if (!existingUser) {
-            console.error(`User not found with ID: ${decoded.id}`);
+          // Use findOneAndUpdate for atomic operation
+          const result = await withTimeout(
+            User.findOneAndUpdate(
+              { _id: decoded.id },
+              {
+                $push: {
+                  savedGuides: {
+                    niche,
+                    problem,
+                    solution,
+                    isPinned: false,
+                    createdAt: new Date()
+                  }
+                }
+              },
+              { new: true, select: 'savedGuides.$' }
+            ).exec(),
+            5000
+          );
+
+          if (!result) {
             return res.status(404).json({ message: 'User not found' });
           }
 
-          // Initialize savedGuides if it doesn't exist
-          if (!existingUser.savedGuides) {
-            existingUser.savedGuides = new mongoose.Types.DocumentArray([]);
-          }
-
-          // Create new guide with proper typing
-          const newGuide: IGuide = {
-            niche,
-            problem,
-            solution,
-            isPinned: false,
-            createdAt: new Date()
-          };
-
-          // Add the guide to the array
-          existingUser.savedGuides.push(newGuide);
-          await existingUser.save();
-
-          // Get the newly added guide
-          const savedGuide = existingUser.savedGuides[existingUser.savedGuides.length - 1];
-
-          console.log('Guide saved successfully for user:', decoded.id);
-          
-          return res.status(201).json({
-            message: 'Guide saved successfully',
-            guide: savedGuide
-          });
+          const newGuide = result.savedGuides[result.savedGuides.length - 1];
+          return res.status(201).json({ guide: newGuide });
         } catch (error: any) {
-          console.error('Error saving guide:', error);
-          return res.status(500).json({ 
-            message: 'Failed to save guide',
-            details: process.env.NODE_ENV === 'development' ? error.message : undefined
-          });
+          if (error.message === 'Operation timed out') {
+            return res.status(504).json({ message: 'Request timed out' });
+          }
+          throw error;
         }
 
       case 'PUT':
@@ -221,20 +211,14 @@ export default async function handler(
         return res.status(405).json({ message: 'Method not allowed' });
     }
   } catch (error: any) {
-    console.error('Guides API error:', error);
+    console.error('API Error:', error);
     
-    // Handle specific error types
-    if (error.message === 'Invalid token') {
-      return res.status(401).json({ message: 'Authentication failed' });
+    if (error.message === 'Operation timed out') {
+      return res.status(504).json({ message: 'Request timed out' });
     }
     
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({ message: 'Invalid data provided' });
-    }
-    
-    return res.status(500).json({ 
-      message: 'Something went wrong',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    return res.status(error.status || 500).json({ 
+      message: error.message || 'Something went wrong'
     });
   }
 } 

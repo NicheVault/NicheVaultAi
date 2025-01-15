@@ -185,38 +185,37 @@ export default function Home() {
 
   const fetchSavedGuides = async (token: string) => {
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+
       const response = await fetch('/api/guides', {
         headers: {
           'Authorization': `Bearer ${token}`,
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache'
-        }
+          'Cache-Control': 'no-cache'
+        },
+        signal: controller.signal
       });
 
+      clearTimeout(timeoutId);
+
       if (!response.ok) {
-        if (response.status === 401) {
-          localStorage.removeItem('token');
-          localStorage.removeItem('user');
-          setUser(null);
-          setShowAuthModal(true);
-          throw new Error('Session expired. Please login again.');
+        if (response.status === 504) {
+          throw new Error('Request timed out. Please try again.');
         }
-        throw new Error('Failed to fetch guides');
+        const data = await response.json();
+        throw new Error(data.message || 'Failed to fetch guides');
       }
 
       const data = await response.json();
-      setSavedGuides(data.guides);
-
-      // Optional: Use metadata for additional features
-      if (data.metadata?.total > 0) {
-        showNotification(
-          `Loaded ${data.metadata.total} guides (${data.metadata.pinned} pinned)`,
-          'success'
-        );
-      }
+      setSavedGuides(data.guides || []);
     } catch (error: any) {
       console.error('Error fetching guides:', error);
-      showNotification(error.message || 'Failed to fetch guides', 'error');
+      showNotification(
+        error.message || 'Failed to fetch guides. Please try again.',
+        'error'
+      );
+    } finally {
+      setLoading(false);
     }
   };
 
