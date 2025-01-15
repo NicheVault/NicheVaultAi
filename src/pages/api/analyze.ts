@@ -1,5 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { processBatchRequests } from '../../utils/batchProcessor';
+import { rateLimiter } from '../../utils/apiRateLimit';
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || '');
 
@@ -14,6 +16,14 @@ export default async function handler(
   try {
     const { action, niche, problem, currentSolution } = req.body;
     const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+
+    // Wrap the API calls with rate limiting
+    const makeApiCall = async (prompt: string) => {
+      return rateLimiter.addToQueue(async () => {
+        const result = await model.generateContent(prompt);
+        return result.response.text();
+      });
+    };
 
     switch (action) {
       case 'expandSolution':
@@ -39,156 +49,169 @@ export default async function handler(
         return res.status(200).json({ additionalContent });
 
       case 'getNiches': {
-        const nichesPrompt = `Generate a list of 20 profitable business niches.
+        const batchSize = 5;
+        const totalNiches = 20;
+        const batches = Math.ceil(totalNiches / batchSize);
+        const excludeNiches = req.body.excludeNiches || [];
         
-        Respond ONLY with a valid JSON object in exactly this format:
-        {
-          "categories": ["Technology", "Health", "Education", "Finance", "Lifestyle"],
-          "niches": [
+        const nicheBatches = await processBatchRequests(
+          Array(batches).fill(null),
+          1,
+          async () => {
+            const nichesPrompt = `Generate a list of ${batchSize} unique and profitable business niches${
+              excludeNiches.length > 0 ? ' (excluding: ' + excludeNiches.join(', ') + ')' : ''
+            }.
+            
+            Respond ONLY with a valid JSON object in exactly this format:
             {
-              "name": "Example Niche",
-              "category": "Technology",
-              "description": "Brief description under 100 chars",
-              "potential": "★★★★☆",
-              "competition": "Medium"
+              "niches": [
+                {
+                  "name": "Example Niche",
+                  "category": "Technology",
+                  "description": "Brief description under 100 chars",
+                  "potential": "★★★★☆",
+                  "competition": "Medium"
+                }
+              ]
+            }`;
+
+            try {
+              const response = await makeApiCall(nichesPrompt);
+              const cleaned = response.replace(/```json\s*/g, '').replace(/```/g, '').trim();
+              const parsed = JSON.parse(cleaned).niches;
+              
+              // Filter out any duplicates or excluded niches
+              return parsed.filter((niche: any) => 
+                !excludeNiches.includes(niche.name) &&
+                parsed.findIndex((n: any) => n.name === niche.name) === parsed.indexOf(niche)
+              );
+            } catch (error) {
+              console.error('Failed to parse batch response:', error);
+              return [];
             }
-          ]
-        }`;
+          }
+        );
 
-        const nichesResult = await model.generateContent(nichesPrompt);
-        const nichesText = await nichesResult.response.text();
-        
-        try {
-          const cleanedText = nichesText.trim()
-            .replace(/```json/g, '')
-            .replace(/```/g, '')
-            .replace(/\n/g, ' ')
-            .trim();
+        const allNiches = nicheBatches.flat();
+        const categories = [...new Set(allNiches.map(n => n.category))];
 
-          const parsedResponse = JSON.parse(cleanedText);
-          return res.status(200).json(parsedResponse);
-        } catch (parseError) {
-          console.error('Failed to parse niches JSON:', nichesText);
-          return res.status(200).json({
-            categories: ['Technology', 'Health', 'Education', 'Finance', 'Lifestyle'],
-            niches: [
-              {
-                name: 'AI Solutions',
-                category: 'Technology',
-                description: 'Develop AI-powered solutions for businesses',
-                potential: '★★★★★',
-                competition: 'Medium'
-              },
-              {
-                name: 'Digital Wellness',
-                category: 'Health',
-                description: 'Online mental health and wellness services',
-                potential: '★★★★☆',
-                competition: 'Medium'
-              },
-              {
-                name: 'EdTech Platform',
-                category: 'Education',
-                description: 'Online learning and skill development',
-                potential: '★★★★☆',
-                competition: 'Medium'
-              }
-            ]
-          });
-        }
-        break;
+        return res.status(200).json({
+          categories,
+          niches: allNiches
+        });
       }
 
       case 'getProblems': {
-        if (!niche) {
-          return res.status(400).json({ error: 'Niche is required' });
-        }
-
-        const problemsPrompt = `Analyze the "${niche}" niche and provide 5 real-world problems that entrepreneurs can solve.
-        Respond in this exact JSON format:
-        {
-          "problems": [
+        const problemBatches = await processBatchRequests(
+          Array(2).fill(null),
+          1,
+          async () => {
+            const problemsPrompt = `Analyze the "${niche}" niche and provide 3 real-world problems that entrepreneurs can solve.
+            Respond in this exact JSON format:
             {
-              "title": "Problem Title",
-              "description": "Detailed problem description",
-              "audience": "Target audience affected",
-              "severity": "High/Medium/Low",
-              "complexity": "High/Medium/Low",
-              "example": "Real-world example of this problem"
+              "problems": [
+                {
+                  "title": "Problem Title",
+                  "description": "Detailed problem description",
+                  "audience": "Target audience affected",
+                  "severity": "High/Medium/Low",
+                  "complexity": "High/Medium/Low",
+                  "example": "Real-world example of this problem"
+                }
+              ]
+            }`;
+
+            try {
+              const response = await makeApiCall(problemsPrompt);
+              const cleaned = response.replace(/```json\s*/g, '').replace(/```/g, '').trim();
+              return JSON.parse(cleaned).problems;
+            } catch (error) {
+              console.error('Failed to parse problems batch:', error);
+              return [];
             }
-          ]
-        }
-        
-        Important: Ensure the response is valid JSON and properly formatted. Do not include any markdown code blocks or additional text.`;
-
-        const problemsResult = await model.generateContent(problemsPrompt);
-        const problemsText = await problemsResult.response.text();
-        let cleanedText = '';
-        
-        try {
-          cleanedText = problemsText
-            .replace(/```json\s*/g, '')
-            .replace(/```\s*/g, '')
-            .replace(/\n\s*/g, ' ')
-            .trim();
-
-          if (!cleanedText.startsWith('{') || !cleanedText.endsWith('}')) {
-            throw new Error('Invalid JSON format in response');
           }
+        );
 
-          const parsedProblems = JSON.parse(cleanedText);
-
-          if (!parsedProblems.problems || !Array.isArray(parsedProblems.problems)) {
-            throw new Error('Invalid response structure');
-          }
-
-          return res.status(200).json(parsedProblems);
-        } catch (parseError) {
-          console.error('Failed to parse problems JSON:', {
-            originalText: problemsText,
-            cleanedText: cleanedText,
-            error: parseError
-          });
-
-          return res.status(200).json({
-            problems: [
-              {
-                title: "Market Analysis",
-                description: "Understanding market trends and customer needs in the " + niche + " niche",
-                audience: "Entrepreneurs and business owners",
-                severity: "Medium",
-                complexity: "Medium",
-                example: "A business owner needs to validate their product idea in the " + niche + " market"
-              }
-            ]
-          });
-        }
-        break;
+        return res.status(200).json({
+          problems: problemBatches.flat()
+        });
       }
 
       case 'getSolution': {
-        if (!niche || !problem) {
-          return res.status(400).json({ error: 'Niche and problem are required' });
-        }
+        const sections = [
+          {
+            title: 'Executive Summary & Market Analysis',
+            prompts: [
+              `Provide a concise executive summary and market analysis for solving "${problem}" in the ${niche} niche.
+               Format your response in clear paragraphs, using:
+               - Regular text for normal content
+               - ## for section headings
+               - • for bullet points (no asterisks or markdown)
+               
+               Focus on key opportunities and market validation.
+               Keep it under 250 words total.`
+            ]
+          },
+          {
+            title: 'Implementation Strategy',
+            prompts: [
+              `Create a practical implementation plan for solving "${problem}" in the ${niche} niche.
+               Format your response using:
+               - ## for section headings
+               - • for bullet points (no asterisks or markdown)
+               - Regular text for descriptions
+               
+               Include:
+               • Key steps and timeline
+               • Required resources
+               • Success metrics
+               
+               Keep it actionable and under 250 words.`
+            ]
+          },
+          {
+            title: 'Business & Revenue Model',
+            prompts: [
+              `Outline the business and revenue model for solving "${problem}" in the ${niche} niche.
+               Format using:
+               - ## for section headings
+               - • for bullet points (no asterisks or markdown)
+               - Regular text for explanations
+               
+               Include:
+               • Revenue streams
+               • Pricing strategy
+               • Cost structure
+               
+               Keep it focused and under 250 words.`
+            ]
+          }
+        ];
 
-        const solutionPrompt = `Create a detailed solution guide for this problem: "${problem}" in the ${niche} niche.
-        Format the response in HTML with these sections:
-        - Executive Summary
-        - Market Analysis
-        - Implementation Plan
-        - Business Model
-        - Marketing Strategy
-        - Risk Analysis
-        - Success Metrics
-        - Next Steps`;
+        const solutionParts = await processBatchRequests(
+          sections,
+          3,
+          async (section) => {
+            const results = await Promise.all(
+              section.prompts.map(async (prompt) => {
+                const result = await model.generateContent(prompt);
+                const response = await result.response.text();
+                return response
+                  .trim()
+                  .replace(/\*\*/g, '')
+                  .replace(/\*/g, '')
+                  .replace(/- /g, '• ')
+                  .replace(/\n\n+/g, '\n\n');
+              })
+            );
+            
+            return `## ${section.title}\n\n${results.join('\n\n')}`;
+          }
+        );
 
-        const solutionResult = await model.generateContent(solutionPrompt);
-        const solution = await solutionResult.response.text();
-
-        return res.status(200).json({ 
-          solution: solution.replace(/```html/g, '').replace(/```/g, '')
+        return res.status(200).json({
+          solution: solutionParts.join('\n\n')
         });
-        break;
       }
 
       default:
@@ -196,6 +219,12 @@ export default async function handler(
     }
   } catch (error: any) {
     console.error('API Error:', error);
+    if (error.message.includes('429')) {
+      return res.status(429).json({ 
+        error: 'Rate limit exceeded. Please try again in a few moments.',
+        retryAfter: 5 // Suggest retry after 5 seconds
+      });
+    }
     return res.status(500).json({ error: error.message || 'Something went wrong' });
   }
 } 

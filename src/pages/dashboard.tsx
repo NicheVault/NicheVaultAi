@@ -61,19 +61,48 @@ export default function Dashboard() {
 
   const fetchSavedGuides = async (token: string) => {
     try {
+      if (!token) {
+        console.error('No token found');
+        router.push('/login');
+        return;
+      }
+
       const response = await fetch('/api/guides', {
         headers: {
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
         }
       });
+
+      if (response.status === 401) {
+        localStorage.removeItem('token');
+        router.push('/login');
+        return;
+      }
+
       const data = await response.json();
-      setSavedGuides(data.guides);
+      
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to fetch guides');
+      }
+
+      setSavedGuides(data.guides || []);
     } catch (error) {
       console.error('Error fetching guides:', error);
+      showNotification('Failed to fetch guides', 'error');
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      router.push('/login');
+      return;
+    }
+    fetchSavedGuides(token);
+  }, []);
 
   const togglePin = async (guideId: string) => {
     setLoadingStates(prev => ({ ...prev, [guideId]: true }));

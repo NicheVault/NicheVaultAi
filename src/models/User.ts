@@ -17,19 +17,32 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Please provide a name'],
   },
-  savedGuides: [{
-    niche: String,
-    problem: String,
-    solution: String,
-    isPinned: {
-      type: Boolean,
-      default: false
-    },
-    createdAt: {
-      type: Date,
-      default: Date.now
-    }
-  }]
+  savedGuides: {
+    type: [{
+      niche: {
+        type: String,
+        required: true
+      },
+      problem: {
+        type: String,
+        required: true
+      },
+      solution: {
+        type: String,
+        required: true
+      },
+      isPinned: {
+        type: Boolean,
+        default: false
+      },
+      createdAt: {
+        type: Date,
+        default: Date.now
+      }
+    }],
+    default: [],
+    _id: true // Ensure MongoDB generates _id for each guide
+  }
 }, {
   timestamps: true
 });
@@ -46,6 +59,21 @@ userSchema.pre('save', async function(next) {
 // Match password method
 userSchema.methods.matchPassword = async function(enteredPassword: string) {
   return await bcrypt.compare(enteredPassword, this.password);
+};
+
+// Add an initialization hook
+userSchema.pre('save', function(next) {
+  if (!this.savedGuides) {
+    this.savedGuides = [];
+  }
+  next();
+});
+
+// Add this method to the schema
+userSchema.methods.toJSON = function() {
+  const obj = this.toObject();
+  delete obj.password;
+  return obj;
 };
 
 export default mongoose.models.User || mongoose.model('User', userSchema); 

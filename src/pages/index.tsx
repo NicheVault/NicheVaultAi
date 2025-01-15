@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Head from 'next/head';
 import Image from 'next/image';
 import { useRouter } from 'next/router';
@@ -88,31 +88,141 @@ export default function Home() {
   };
 
   useEffect(() => {
-    // Check for saved token and redirect to niches if logged in
     const token = localStorage.getItem('token');
     const userData = localStorage.getItem('user');
+    
     if (token && userData) {
-      setUser(JSON.parse(userData));
-      setStep('niches'); // Automatically go to niches page when logged in
+      try {
+        // Verify token is still valid
+        fetch('/api/guides', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        }).then(response => {
+          if (!response.ok && response.status === 401) {
+            // Token expired or invalid
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            setUser(null);
+            setShowAuthModal(true);
+          } else {
+            setUser(JSON.parse(userData));
+            // Set step to niches after successful auth
+            setStep('niches');
+            // Load initial niches
+            loadInitialNiches();
+          }
+        });
+      } catch (error) {
+        console.error('Error verifying token:', error);
+      }
+    } else {
+      // If no token, still load initial niches for non-authenticated users
+      loadInitialNiches();
     }
   }, []);
+
+  const loadInitialNiches = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'getNiches' })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+
+      // Remove duplicates by name
+      const uniqueNiches = data.niches.filter((niche: NicheOption, index: number, self: NicheOption[]) =>
+        index === self.findIndex((n) => n.name === niche.name)
+      );
+
+      setCategories(data.categories);
+      setNiches(uniqueNiches);
+      setInitialNiches(uniqueNiches);
+    } catch (error: any) {
+      console.error('Error loading niches:', error);
+      showNotification(error.message || 'Failed to load niches', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const generateNewNiches = async () => {
+    try {
+      setLoading(true);
+      setHasGeneratedNew(true);
+      
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          action: 'getNiches',
+          excludeNiches: niches.map(n => n.name) // Exclude existing niches
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+
+      // Combine and remove duplicates
+      const combinedNiches = [...niches, ...data.niches];
+      const uniqueNiches = combinedNiches.filter((niche, index, self) =>
+        index === self.findIndex((n) => n.name === niche.name)
+      );
+
+      setCategories([...new Set([...categories, ...data.categories])]);
+      setNiches(uniqueNiches);
+    } catch (error: any) {
+      console.error('Error generating niches:', error);
+      showNotification(error.message || 'Failed to generate niches', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const fetchSavedGuides = async (token: string) => {
     try {
       const response = await fetch('/api/guides', {
         headers: {
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${token}`,
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
         }
       });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          setUser(null);
+          setShowAuthModal(true);
+          throw new Error('Session expired. Please login again.');
+        }
+        throw new Error('Failed to fetch guides');
+      }
+
       const data = await response.json();
       setSavedGuides(data.guides);
-    } catch (error) {
+
+      // Optional: Use metadata for additional features
+      if (data.metadata?.total > 0) {
+        showNotification(
+          `Loaded ${data.metadata.total} guides (${data.metadata.pinned} pinned)`,
+          'success'
+        );
+      }
+    } catch (error: any) {
       console.error('Error fetching guides:', error);
+      showNotification(error.message || 'Failed to fetch guides', 'error');
     }
   };
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoading(true);
     try {
       const response = await fetch(`/api/auth/${authMode}`, {
         method: 'POST',
@@ -128,10 +238,27 @@ export default function Home() {
         localStorage.setItem('user', JSON.stringify(data.user));
         setUser(data.user);
         setShowAuthModal(false);
-        fetchSavedGuides(data.token);
+        
+        // Show success notification based on auth mode
+        if (authMode === 'register') {
+          showNotification('Registration successful! Welcome to NicheAI', 'success');
+        } else {
+          showNotification('Welcome back!', 'success');
+        }
+        
+        // Fetch guides after successful auth
+        await fetchSavedGuides(data.token);
+        
+        // Optional: Redirect to appropriate page
+        if (authMode === 'register') {
+          router.push('/dashboard?newUser=true');
+        }
       }
     } catch (error: any) {
-      showNotification(error.message, 'error');
+      console.error('Auth error:', error);
+      showNotification(error.message || `Failed to ${authMode}`, 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -143,33 +270,56 @@ export default function Home() {
   };
 
   const saveGuide = async () => {
-    if (!user) {
-      setShowAuthModal(true);
-      return;
-    }
-
     try {
       const token = localStorage.getItem('token');
+      if (!token) {
+        showNotification('Please login to save guides', 'error');
+        setShowAuthModal(true);
+        return;
+      }
+
+      setLoading(true);
+
+      const guideData = {
+        niche: selectedNiche,
+        problem: selectedProblem,
+        solution: solution
+      };
+
       const response = await fetch('/api/guides', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({
-          niche: selectedNiche,
-          problem: selectedProblem,
-          solution
-        })
+        body: JSON.stringify(guideData)
       });
 
       const data = await response.json();
-      if (!response.ok) throw new Error(data.message);
 
-      setSavedGuides([...savedGuides, data.guide]);
+      if (!response.ok) {
+        if (response.status === 401) {
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          setUser(null);
+          setShowAuthModal(true);
+          throw new Error('Session expired. Please login again.');
+        }
+        throw new Error(data.message || 'Failed to save guide');
+      }
+
       showNotification('Guide saved successfully!', 'success');
+      
+      // Update local guides list
+      setSavedGuides(prev => [...prev, data.guide]);
+      
+      // Optionally redirect to dashboard
+      router.push('/dashboard');
     } catch (error: any) {
-      showNotification(error.message, 'error');
+      console.error('Error saving guide:', error);
+      showNotification(error.message || 'Failed to save guide', 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -217,32 +367,6 @@ export default function Home() {
     }
   };
 
-  useEffect(() => {
-    // Load initial niches when component mounts
-    const loadInitialNiches = async () => {
-      try {
-        const response = await fetch('/api/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'getNiches' })
-        });
-
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.error || 'Failed to fetch initial niches');
-        }
-
-        setCategories(data.categories || []);
-        setInitialNiches(data.niches || []);
-        setNiches(data.niches || []);
-      } catch (error: any) {
-        console.error('Error fetching initial niches:', error);
-      }
-    };
-
-    loadInitialNiches();
-  }, []);
-
   const getNiches = async () => {
     if (!user) {
       setShowAuthModal(true);
@@ -259,6 +383,14 @@ export default function Home() {
           excludeNiches: initialNiches.map(n => n.name)
         })
       });
+
+      if (response.status === 429) {
+        const data = await response.json();
+        showNotification('Please wait a moment before generating more niches', 'error');
+        // Optionally auto-retry after suggested delay
+        setTimeout(() => getNiches(), (data.retryAfter || 5) * 1000);
+        return;
+      }
 
       const data = await response.json();
       if (!response.ok) {
@@ -292,7 +424,12 @@ export default function Home() {
         throw new Error(data.error || 'Failed to fetch problems');
       }
 
-      setProblems(data.problems);
+      // Remove duplicates by title
+      const uniqueProblems = data.problems.filter((problem: ProblemOption, index: number, self: ProblemOption[]) =>
+        index === self.findIndex((p) => p.title === problem.title)
+      );
+
+      setProblems(uniqueProblems);
       setStep('problems');
     } catch (error: any) {
       showNotification(error.message || 'An error occurred', 'error');
@@ -524,13 +661,15 @@ export default function Home() {
   };
 
   // Filter niches based on category and search term
-  const filteredNiches = (hasGeneratedNew ? niches : initialNiches).filter(niche => {
-    const matchesCategory = !selectedCategory || niche.category === selectedCategory;
-    const matchesSearch = !searchTerm || 
-      niche.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      niche.description.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesCategory && matchesSearch;
-  });
+  const filteredNiches = useMemo(() => {
+    return niches.filter(niche => {
+      const matchesCategory = !selectedCategory || niche.category === selectedCategory;
+      const matchesSearch = !searchTerm || 
+        niche.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        niche.description.toLowerCase().includes(searchTerm.toLowerCase());
+      return matchesCategory && matchesSearch;
+    });
+  }, [niches, selectedCategory, searchTerm]);
 
   return (
     <div className="min-h-screen bg-[#0F1117] flex flex-col">
@@ -811,134 +950,89 @@ export default function Home() {
         )}
 
         {step === 'niches' && (
-          <section className="pt-24 pb-12 px-4">
-            <div className="max-w-7xl mx-auto">
-              <div className="glass-card p-8">
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 space-y-4 md:space-y-0">
-                  <div className="flex items-center gap-4 w-full md:w-auto">
-                    <h2 className="text-2xl md:text-3xl font-bold gradient-text animate-gradient">
-                      {hasGeneratedNew ? 'Explore More Niches' : 'Popular AI Niches'}
-                    </h2>
-                    <div className="animate-pulse-slow hidden md:block">
-                      <span className="text-2xl">✨</span>
-                    </div>
-                  </div>
-                  <div className="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4 w-full md:w-auto">
-                    <select
-                      value={selectedCategory}
-                      onChange={(e) => setSelectedCategory(e.target.value)}
-                      className="w-full md:w-auto px-4 py-2 bg-white/5 rounded-lg border border-white/10 text-white focus:border-purple-500 transition-all hover:bg-white/10"
-                    >
-                      <option value="">All Categories</option>
-                      {categories.map((cat, index) => (
-                        <option key={index} value={cat}>{cat}</option>
-                      ))}
-                    </select>
-                    <div className="flex gap-2 w-full md:w-auto">
-                      <input
-                        type="text"
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        placeholder="Search niches..."
-                        className="flex-1 px-4 py-2 bg-white/5 rounded-lg border border-white/10 text-white focus:border-purple-500 transition-all hover:bg-white/10"
-                      />
-                      <button
-                        onClick={getNiches}
-                        className="px-4 md:px-6 py-2 gradient-button animate-glow whitespace-nowrap"
-                        disabled={loading}
-                      >
-                        {loading ? (
-                          <span className="flex items-center">
-                            <svg className="animate-spin -ml-1 mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            <span className="hidden md:inline">Generating...</span>
-                          </span>
-                        ) : (
-                          <>
-                            <span className="hidden md:inline">Generate New Niches</span>
-                            <span className="md:hidden">Generate</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {loading ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {Array.from({ length: 6 }).map((_, index) => (
-                      <div key={index} className="glass-card animate-pulse">
-                        <div className="h-6 bg-white/10 rounded w-3/4 mb-4"></div>
-                        <div className="h-4 bg-white/10 rounded w-full mb-2"></div>
-                        <div className="h-4 bg-white/10 rounded w-5/6 mb-4"></div>
-                        <div className="flex justify-between items-center">
-                          <div className="h-6 bg-white/10 rounded w-1/4"></div>
-                          <div className="h-6 bg-white/10 rounded w-1/4"></div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {filteredNiches.map((niche, index) => (
-                      <div
-                        key={index}
-                        className="animate-fade-in"
-                        style={{ animationDelay: `${index * 0.1}s` }}
-                      >
-                        <NicheCard
-                          niche={niche}
-                          onClick={() => getProblems(niche.name)}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {!loading && filteredNiches.length === 0 && (
-                  <div className="text-center py-20">
-                    <div className="w-16 h-16 mx-auto mb-4 bg-purple-500/20 rounded-full flex items-center justify-center">
-                      <span className="text-2xl">🔍🔍</span>
-                    </div>
-                    <h3 className="text-xl font-semibold mb-2">No niches found</h3>
-                    <p className="text-gray-400 mb-8">
-                      {searchTerm 
-                        ? "No niches match your search criteria" 
-                        : "Try generating new niches or adjusting your filters"}
-                    </p>
-                    <button
-                      onClick={getNiches}
-                      className="px-6 py-3 gradient-button animate-glow"
-                    >
-                      Generate New Niches
-                    </button>
-                  </div>
-                )}
-
-                {!loading && filteredNiches.length > 0 && (
-                  <div className="mt-8 text-center">
-                    <button
-                      onClick={getNiches}
-                      className="px-6 py-3 gradient-button animate-glow"
-                      disabled={loading}
-                    >
-                      {loading ? (
-                        <span className="flex items-center">
-                          <svg className="animate-spin -ml-1 mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                          Generating...
-                        </span>
-                      ) : (
-                        'Discover More Niches'
-                      )}
-                    </button>
-                  </div>
-                )}
+          <section className="py-12">
+            <div className="max-w-7xl mx-auto px-4">
+              <div className="flex justify-between items-center mb-8">
+                <h2 className="text-3xl font-bold gradient-text">Choose Your Niche</h2>
+                <button
+                  onClick={generateNewNiches}
+                  disabled={loading}
+                  className="px-4 py-2 rounded-lg bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 transition-all disabled:opacity-50"
+                >
+                  {loading ? 'Generating...' : 'Generate New Niches'}
+                </button>
               </div>
+              
+              {/* Categories */}
+              <div className="flex flex-wrap gap-2 mb-6">
+                <button
+                  onClick={() => setSelectedCategory('')}
+                  className={`px-4 py-2 rounded-lg transition-all ${
+                    !selectedCategory
+                      ? 'bg-purple-500/20 text-purple-300'
+                      : 'bg-white/5 text-gray-400 hover:bg-white/10'
+                  }`}
+                >
+                  All
+                </button>
+                {categories.map((category) => (
+                  <button
+                    key={category}
+                    onClick={() => setSelectedCategory(category)}
+                    className={`px-4 py-2 rounded-lg transition-all ${
+                      selectedCategory === category
+                        ? 'bg-purple-500/20 text-purple-300'
+                        : 'bg-white/5 text-gray-400 hover:bg-white/10'
+                    }`}
+                  >
+                    {category}
+                  </button>
+                ))}
+              </div>
+
+              {/* Search */}
+              <input
+                type="text"
+                placeholder="Search niches..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full px-4 py-2 bg-white/5 rounded-lg mb-6"
+              />
+
+              {/* Niches Grid */}
+              {loading ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="glass-card animate-pulse">
+                      <div className="h-6 bg-white/10 rounded w-3/4 mb-4"></div>
+                      <div className="h-4 bg-white/10 rounded w-full mb-2"></div>
+                      <div className="h-4 bg-white/10 rounded w-5/6 mb-4"></div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {filteredNiches.map((niche) => (
+                    <div
+                      key={niche.name}
+                      onClick={() => {
+                        setSelectedNiche(niche.name);
+                        getProblems(niche.name);
+                      }}
+                      className="glass-card cursor-pointer group hover:border-purple-500/50 transition-all"
+                    >
+                      <h3 className="text-lg font-semibold mb-2 group-hover:text-purple-300">
+                        {niche.name}
+                      </h3>
+                      <p className="text-gray-400 mb-4">{niche.description}</p>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-yellow-400">{niche.potential}</span>
+                        <span className="text-gray-500">{niche.competition}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </section>
         )}
@@ -1214,8 +1308,22 @@ export default function Home() {
                     )}
                   </button>
                 </div>
-                <button type="submit" className="w-full gradient-button">
-                  {authMode === 'login' ? 'Login' : 'Register'}
+                <button 
+                  type="submit" 
+                  className="w-full gradient-button flex items-center justify-center"
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <span className="flex items-center">
+                      <svg className="animate-spin -ml-1 mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      {authMode === 'login' ? 'Logging in...' : 'Registering...'}
+                    </span>
+                  ) : (
+                    authMode === 'login' ? 'Login' : 'Register'
+                  )}
                 </button>
               </form>
               <p className="mt-4 text-center text-gray-400">
