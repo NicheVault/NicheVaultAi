@@ -156,7 +156,7 @@ export default function Home() {
       setHasGeneratedNew(true);
       
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // Increased to 30 seconds
 
       const response = await fetch('/api/analyze', {
         method: 'POST',

@@ -5,9 +5,10 @@ import { rateLimiter } from '../../utils/apiRateLimit';
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || '');
 
-// Add rate limiting and retry logic
-const MAX_RETRIES = 2;
-const RETRY_DELAY = 1000; // 1 second
+// Increase timeout and add more retries
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 2000; // 2 seconds
+const BATCH_TIMEOUT = 8000; // 8 seconds per batch
 
 const retryWithTimeout = async <T>(
   operation: () => Promise<T>,
@@ -25,9 +26,13 @@ const retryWithTimeout = async <T>(
         )
       ]) as T;
     } catch (error) {
+      console.error(`Attempt ${i + 1} failed:`, error);
       lastError = error;
       if (i < retries - 1) {
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (i + 1)));
+        // Exponential backoff
+        const delay = RETRY_DELAY * Math.pow(2, i);
+        console.log(`Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
   }
@@ -48,8 +53,8 @@ export default async function handler(
 
     switch (action) {
       case 'getNiches': {
-        const batchSize = 3; // Reduced batch size
-        const totalNiches = 12; // Reduced total niches
+        const batchSize = 2; // Reduced batch size
+        const totalNiches = 8; // Reduced total niches
         const batches = Math.ceil(totalNiches / batchSize);
         const excludeNiches = req.body.excludeNiches || [];
         
@@ -59,7 +64,20 @@ export default async function handler(
           try {
             const nichesPrompt = `Generate ${batchSize} unique and profitable business niches${
               excludeNiches.length > 0 ? ' (excluding: ' + excludeNiches.join(', ') + ')' : ''
-            }.`;
+            }.
+            
+            Respond in this exact JSON format:
+            {
+              "niches": [
+                {
+                  "name": "Example Niche",
+                  "category": "Technology/Health/Business/Education",
+                  "description": "Brief description under 100 chars",
+                  "potential": "★★★★☆",
+                  "competition": "Low/Medium/High"
+                }
+              ]
+            }`;
 
             const result = await retryWithTimeout(
               async () => {
@@ -68,29 +86,42 @@ export default async function handler(
                 try {
                   // Clean and parse the response
                   const cleaned = text.replace(/```json\s*/g, '').replace(/```/g, '').trim();
-                  return JSON.parse(cleaned).niches;
+                  const parsed = JSON.parse(cleaned);
+                  return parsed.niches || [];
                 } catch (parseError) {
                   console.error('Parse error:', parseError);
                   // Fallback format if JSON parsing fails
-                  return text.split('\n')
-                    .filter(line => line.trim())
-                    .map(name => ({
-                      name: name.replace(/^\d+\.\s*/, '').trim(),
-                      category: 'Other',
-                      description: '',
-                      potential: '★★★☆☆',
-                      competition: 'Medium'
-                    }));
+                  return [{
+                    name: text.split('\n')[0].replace(/^\d+\.\s*/, '').trim(),
+                    category: 'Other',
+                    description: 'Generated niche opportunity',
+                    potential: '★★★☆☆',
+                    competition: 'Medium'
+                  }];
                 }
               },
-              5000 // 5 second timeout
+              BATCH_TIMEOUT
             );
 
             allNiches = [...allNiches, ...result];
+
+            // Add delay between batches to avoid rate limiting
+            if (i < batches - 1) {
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
           } catch (error) {
-            console.error(`Batch ${i} failed:`, error);
-            continue; // Skip failed batch and continue
+            console.error(`Batch ${i + 1} failed:`, error);
+            // Continue with partial results if we have any
+            if (allNiches.length > 0) {
+              break;
+            }
+            continue;
           }
+        }
+
+        // If we have no niches at all, throw an error
+        if (allNiches.length === 0) {
+          throw new Error('Failed to generate niches. Please try again.');
         }
 
         // Remove duplicates and format response
