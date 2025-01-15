@@ -129,38 +129,57 @@ export default async function handler(
         return res.status(200).json({ additionalContent });
 
       case 'getProblems': {
-        const problemBatches = await processBatchRequests(
-          Array(2).fill(null),
-          1,
-          async () => {
-            const problemsPrompt = `Analyze the "${niche}" niche and provide 3 real-world problems that entrepreneurs can solve.
-            Respond in this exact JSON format:
-            {
-              "problems": [
-                {
-                  "title": "Problem Title",
-                  "description": "Detailed problem description",
-                  "audience": "Target audience affected",
-                  "severity": "High/Medium/Low",
-                  "complexity": "High/Medium/Low",
-                  "example": "Real-world example of this problem"
-                }
-              ]
-            }`;
+        const batchSize = 3;
+        const batches = 2;
+        let allProblems = [];
 
-            try {
-              const response = await makeApiCall(problemsPrompt);
-              const cleaned = response.replace(/```json\s*/g, '').replace(/```/g, '').trim();
-              return JSON.parse(cleaned).problems;
-            } catch (error) {
-              console.error('Failed to parse problems batch:', error);
-              return [];
-            }
+        for (let i = 0; i < batches; i++) {
+          try {
+            const problemsPrompt = `Analyze the "${niche}" niche and provide ${batchSize} real-world problems that entrepreneurs can solve.
+              Respond in this exact JSON format:
+              {
+                "problems": [
+                  {
+                    "title": "Problem Title",
+                    "description": "Detailed problem description",
+                    "audience": "Target audience affected",
+                    "severity": "High/Medium/Low",
+                    "complexity": "High/Medium/Low",
+                    "example": "Real-world example of this problem"
+                  }
+                ]
+              }`;
+
+            const result = await retryWithTimeout(
+              async () => {
+                const response = await model.generateContent(problemsPrompt);
+                const text = response.response.text();
+                try {
+                  // Clean and parse the response
+                  const cleaned = text.replace(/```json\s*/g, '').replace(/```/g, '').trim();
+                  return JSON.parse(cleaned).problems;
+                } catch (parseError) {
+                  console.error('Parse error:', parseError);
+                  return [];
+                }
+              },
+              5000 // 5 second timeout
+            );
+
+            allProblems = [...allProblems, ...result];
+          } catch (error) {
+            console.error(`Batch ${i} failed:`, error);
+            continue; // Skip failed batch and continue
           }
-        );
+        }
+
+        // Remove duplicates by title
+        const uniqueProblems = Array.from(new Set(allProblems.map(p => p.title)))
+          .map(title => allProblems.find(p => p.title === title))
+          .filter(Boolean);
 
         return res.status(200).json({
-          problems: problemBatches.flat()
+          problems: uniqueProblems
         });
       }
 
